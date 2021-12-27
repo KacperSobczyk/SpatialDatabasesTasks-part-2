@@ -1,0 +1,132 @@
+#!/bin/bash
+#BazyDanychPrzestrzennych 2021/22
+#Skrypt ten ma za zadanie automatycznie przetworzyć dane z pliku za pomocą języka SQL
+#Created by Kacper Sobczyk 15.12.2021
+
+#0.Zmienne:
+link="https://home.agh.edu.pl/~wsarlej/Customers_Nov2021.zip"
+password="agh"
+name="Customers_Nov2021.csv"
+name_old="Customers_old.csv"
+TIMESTAMP=$(date "+%m%d%Y")
+NUMERINDEKSU="402305"
+sql_hostname="localhost"
+sql_userid="postgres"
+dbname="cw8"
+path="/mnt/c/Users/Kacper/Documents/GitHub/BazyDanychPrzestrzennych/cw8"
+email="kasobczyk@student.agh.edu.pl"
+mkdir PROCESSED
+
+#1.Pobranie pliku ze strony
+wget $link
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "1.Pobranie pliku ze strony zakończone powodzeniem - $TIMESTAMP" > PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#2.Rozpakowanie pliku
+unzip -P $password '*.zip'
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "2.Rozpakowanie pliku zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#3.Sprawdzanie poprawności pliku
+dane=$(sed '/^\s*$/d' "$name")                                          #usuwam puste linie
+dane=$(echo "$dane" | tail -n +2 | sort)                                #usuwam pierwszą linię i sortuję plik
+cp "$name" oryginał_"$name"
+echo "$dane" > "$name"
+dane_old=$(cat "$name_old" | tail -n +2 | sort)
+echo "$dane_old" > baza.csv
+comm -12 "$name" baza.csv > Customers_Nov2021.bad_"$TIMESTAMP".csv      #biorę wspólne wiesze z posortowanych plików
+comm -23 "$name" Customers_Nov2021.bad_"$TIMESTAMP".csv >>baza.csv      #wybieram tylko te wiersze które nie znajdują się w pliku bad
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "3.Sprawdzanie poprawności pliku zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#4.Tworzenie tabeli w PostgreSQL
+sudo -u "$sql_userid" psql -d "$dbname" -h "$sqlhostname"  -p 5433  -c "CREATE TABLE IF NOT EXISTS CUSTOMERS_$NUMERINDEKSU(first_name VARCHAR(32), last_name VARCHAR(32), email VARCHAR(64), lat REAL, long REAL)"
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "4.Tworzenie tabeli w PostgreSQL zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#5.Dodawanie danych z pliku
+sudo -u "$sql_userid" psql -d "$dbname" -h "$sqlhostname"  -p 5433  -c "COPY CUSTOMERS_$NUMERINDEKSU FROM '"$path"/baza.csv' DELIMITER ',' CSV"
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "5.Dodawanie danych z pliku zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#6. Przeniesienie pliku do podkatalogu
+mv baza.csv "$TIMESTAMP"_baza.csv
+mv "$TIMESTAMP"_baza.csv PROCESSED
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "6.Przeniesienie pliku do podkatalogu zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#7. Wysyłanie maila
+temat="CUSTOMERS LOAD - $TIMESTAMP"
+liczba1=$(cat oryginał_"$name" | wc -l)
+echo "Liczba wierszy w pliku pobranym z Internetu: $liczba1" > emailbody.txt
+liczba2=$(cat "$name" | wc -l)
+echo "Liczba poprawnych wierszy (po czyszczeniu): $liczba2" >> emailbody.txt
+liczba3=$(cat Customers_Nov2021.bad_"$TIMESTAMP".csv | wc -l)
+echo "Liczba duplikatów w pliku wejściowym: $liczba3" >> emailbody.txt
+liczba4=$(cat PROCESSED/"$TIMESTAMP"_baza.csv | wc -l)
+echo "Liczba elementów umieszczonych w tabeli CUSTOMERS_$NUMERINDEKSU: $liczba4" >> emailbody.txt
+mail -s "$temat" "$email" < emailbody.txt
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "7.Wysyłanie maila zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+rm emailbody.txt
+rm oryginał_"$name"
+
+#8. Wybranie klientów na danym obszarze
+sudo -u "$sql_userid" psql -d "$dbname" -h "$sqlhostname"  -p 5433  -c "CREATE TABLE IF NOT EXISTS BEST_CUSTOMERS_$NUMERINDEKSU(first_name VARCHAR(32), last_name VARCHAR(32), email VARCHAR(64), lat REAL, long REAL)"
+sudo -u "$sql_userid" psql -d "$dbname" -h "$sqlhostname"  -p 5433  -c "INSERT INTO BEST_CUSTOMERS_$NUMERINDEKSU(first_name,last_name,email,lat,long) SELECT DISTINCT * FROM CUSTOMERS_$NUMERINDEKSU WHERE ST_DistanceSpheroid(ST_MakePoint(lat,long),ST_MakePoint(41.39988501005976, -75.67329768604034),'SPHEROID[\"WGS 84\",6378137,298.257223563]') <=50000"
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "8.Wybranie klientów na danym obszarze zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#9. Kopiowanie tabeli do pliku
+sudo -u "$sql_userid" psql -d "$dbname" -h "$sqlhostname"  -p 5433  -c "COPY BEST_CUSTOMERS_$NUMERINDEKSU TO '$path/BEST_CUSTOMERS_$NUMERINDEKSU.csv' DELIMITER ',' CSV HEADER"
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "9.Kopiowanie tabeli do pliku zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#10. Kompresja pliku
+zip -r BEST_CUSTOMERS_$NUMERINDEKSU.zip BEST_CUSTOMERS_$NUMERINDEKSU.csv
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "10.Kompresja pliku zakończona powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+
+#11. Wysłanie pliku skompresowanego
+liczba5=$(cat BEST_CUSTOMERS_$NUMERINDEKSU.csv | wc -l)
+liczba6=$(stat -c %y BEST_CUSTOMERS_"$NUMERINDEKSU".csv)
+echo "Raport o pliku BEST_CUSTOMERS_"$NUMERINDEKSU".csv:" > raport.txt
+echo "Liczba linijek pliku: $liczba5" >> raport.txt
+echo "Data ostatniej modyfikacji: $liczba6" >> raport.txt
+mail -s "raport o pliku BEST_CUSTOMERS_"$NUMERINDEKSU".csv" -a "BEST_CUSTOMERS_$NUMERINDEKSU.zip" "$email" < raport.txt
+status="$?"
+if [[ $status -eq 0 ]]
+then
+echo "11.Wysyłanie pliku skompresowanego zakończone powodzeniem - $TIMESTAMP" >> PROCESSED/skrypt_"$TIMESTAMP".log
+fi
+rm raport.txt
