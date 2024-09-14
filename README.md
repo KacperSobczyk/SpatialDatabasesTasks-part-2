@@ -1,1 +1,1 @@
-# BDPKacperSobczyk21-22
+# spatial database exercises 2023
